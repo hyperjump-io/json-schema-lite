@@ -16,8 +16,6 @@
   "devDependencies": {
     "@stylistic/eslint-plugin": "*",
     "@types/node": "*",
-    "@typescript-eslint/eslint-plugin": "*",
-    "@typescript-eslint/parser": "*",
     "eslint-import-resolver-typescript": "*",
     "eslint-plugin-import": "*",
     "json-schema-test-suite": "github:json-schema-org/JSON-Schema-Test-Suite",
