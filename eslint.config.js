@@ -8,6 +8,7 @@ export default tseslint.config(
   ...tseslint.configs.recommendedTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
   importPlugin.flatConfigs.recommended, // eslint-disable-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
+  importPlugin.flatConfigs.typescript, // eslint-disable-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
   stylistic.configs.customize({
     arrowParens: true,
     braceStyle: "1tbs",
