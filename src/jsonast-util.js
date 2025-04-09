@@ -19,16 +19,18 @@ import * as JsonPointer from "@hyperjump/json-pointer";
 
 /** @type (json: Json, uri?: string, pointer?: string) => JsonNode */
 export const toJsonNode = (json, uri = "", pointer = "") => {
+  const location = `${uri}#${encodeURI(pointer)}`;
+
   switch (typeof json) {
     case "boolean":
-      return { type: "json", jsonType: "boolean", value: json, location: `${uri}#${pointer}` };
+      return { type: "json", jsonType: "boolean", value: json, location: location };
     case "number":
-      return { type: "json", jsonType: "number", value: json, location: `${uri}#${pointer}` };
+      return { type: "json", jsonType: "number", value: json, location: location };
     case "string":
-      return { type: "json", jsonType: "string", value: json, location: `${uri}#${pointer}` };
+      return { type: "json", jsonType: "string", value: json, location: location };
     case "object":
       if (json === null) {
-        return { type: "json", jsonType: "null", value: json, location: `${uri}#${pointer}` };
+        return { type: "json", jsonType: "null", value: json, location: location };
       } else if (Array.isArray(json)) {
         return {
           type: "json",
@@ -40,7 +42,7 @@ export const toJsonNode = (json, uri = "", pointer = "") => {
         };
       } else {
         /** @type JsonObjectNode */
-        const objectNode = { type: "json", jsonType: "object", children: [], location: `${uri}#${pointer}` };
+        const objectNode = { type: "json", jsonType: "object", children: [], location: location };
 
         for (const property in json) {
           /** @type JsonPropertyNode */
@@ -87,7 +89,7 @@ export const jsonPointerStep = (segment, node, uri = "#") => {
 };
 
 /** @type (pointer: string, tree: JsonNode, uri?: string) => JsonNode */
-export const jsonPointerGet = (pointer, tree, uri) => {
+export const jsonPointerGet = (pointer, tree, uri = "") => {
   let currentPointer = "";
   let node = tree;
   for (const segment of pointerSegments(pointer)) {
