@@ -18,7 +18,17 @@ import {
 
 /**
  * @typedef {{
- *   valid: boolean;
+ *   instanceLocation: string;
+ *   absoluteKeywordLocation: string;
+ *   keywordLocation?: string;
+ *   error?: string;
+ * }} OutputUnit
+ *
+ * @typedef {{
+ *   valid: true;
+ * } | {
+ *   valid: false;
+ *   errors?: OutputUnit[];
  * }} Output
  */
 
@@ -39,26 +49,44 @@ export const validate = (schema, instance) => {
     }
   }
 
-  const valid = validateSchema(schemaNode, toJsonNode(instance));
+  /** @type OutputUnit[] */
+  const errors = [];
+  const valid = validateSchema(schemaNode, toJsonNode(instance), errors);
 
   schemaRegistry.delete(uri);
 
-  return { valid };
+  return valid ? { valid } : { valid, errors };
 };
 
-/** @type (schemaNode: JsonNode, instanceNode: JsonNode) => boolean */
-const validateSchema = (schemaNode, instanceNode) => {
+/** @type (schemaNode: JsonNode, instanceNode: JsonNode, errors: OutputUnit[]) => boolean */
+const validateSchema = (schemaNode, instanceNode, errors) => {
   if (schemaNode.type === "json") {
     switch (schemaNode.jsonType) {
       case "boolean":
+        if (!schemaNode.value) {
+          errors.push({
+            absoluteKeywordLocation: schemaNode.location,
+            instanceLocation: instanceNode.location
+          });
+        }
         return schemaNode.value;
+
       case "object":
         let isValid = true;
         for (const propertyNode of schemaNode.children) {
           const [keywordNode, keywordValueNode] = propertyNode.children;
           const keywordHandler = keywordHandlers.get(keywordNode.value);
-          if (keywordHandler && !keywordHandler(keywordValueNode, instanceNode, schemaNode)) {
-            isValid = false;
+          if (keywordHandler) {
+            /** @type OutputUnit[] */
+            const keywordErrors = [];
+            if (!keywordHandler(keywordValueNode, instanceNode, schemaNode, keywordErrors)) {
+              isValid = false;
+              errors.push({
+                absoluteKeywordLocation: keywordValueNode.location,
+                instanceLocation: instanceNode.location
+              });
+              errors.push(...keywordErrors);
+            }
           }
         }
 
@@ -81,14 +109,15 @@ export const registerSchema = (schema, uri) => {
  * @typedef {(
  *   keywordNode: JsonNode,
  *   instanceNode: JsonNode,
- *   schemaNode: JsonObjectNode
+ *   schemaNode: JsonObjectNode,
+ *   errors: OutputUnit[],
  * ) => boolean} KeywordHandler
  */
 
 /** @type Map<string, KeywordHandler> */
 const keywordHandlers = new Map();
 
-keywordHandlers.set("$ref", (refNode, instanceNode) => {
+keywordHandlers.set("$ref", (refNode, instanceNode, _schemaNode, errors) => {
   assertNodeType(refNode, "string");
 
   const uri = refNode.location.startsWith("#")
@@ -103,10 +132,10 @@ keywordHandlers.set("$ref", (refNode, instanceNode) => {
   const pointer = decodeURI(parseIriReference(refNode.value).fragment ?? "");
   const referencedSchemaNode = jsonPointerGet(pointer, schemaNode, uri);
 
-  return validateSchema(referencedSchemaNode, instanceNode);
+  return validateSchema(referencedSchemaNode, instanceNode, errors);
 });
 
-keywordHandlers.set("additionalProperties", (additionalPropertiesNode, instanceNode, schemaNode) => {
+keywordHandlers.set("additionalProperties", (additionalPropertiesNode, instanceNode, schemaNode, errors) => {
   if (instanceNode.jsonType !== "object") {
     return true;
   }
@@ -134,7 +163,7 @@ keywordHandlers.set("additionalProperties", (additionalPropertiesNode, instanceN
   let isValid = true;
   for (const propertyNode of instanceNode.children) {
     const [propertyNameNode, instancePropertyNode] = propertyNode.children;
-    if (!isDefinedProperty.test(propertyNameNode.value) && !validateSchema(additionalPropertiesNode, instancePropertyNode)) {
+    if (!isDefinedProperty.test(propertyNameNode.value) && !validateSchema(additionalPropertiesNode, instancePropertyNode, errors)) {
       isValid = false;
     }
   }
@@ -147,12 +176,12 @@ const regexEscape = (string) => string
   .replace(/[|\\{}()[\]^$+*?.]/g, "\\$&")
   .replace(/-/g, "\\x2d");
 
-keywordHandlers.set("allOf", (allOfNode, instanceNode) => {
+keywordHandlers.set("allOf", (allOfNode, instanceNode, _schemaNode, errors) => {
   assertNodeType(allOfNode, "array");
 
   let isValid = true;
   for (const schemaNode of allOfNode.children) {
-    if (!validateSchema(schemaNode, instanceNode)) {
+    if (!validateSchema(schemaNode, instanceNode, errors)) {
       isValid = false;
     }
   }
@@ -160,24 +189,25 @@ keywordHandlers.set("allOf", (allOfNode, instanceNode) => {
   return isValid;
 });
 
-keywordHandlers.set("anyOf", (anyOfNode, instanceNode) => {
+keywordHandlers.set("anyOf", (anyOfNode, instanceNode, _schemaNode, errors) => {
   assertNodeType(anyOfNode, "array");
 
   let isValid = false;
   for (const schemaNode of anyOfNode.children) {
-    if (validateSchema(schemaNode, instanceNode)) {
+    if (validateSchema(schemaNode, instanceNode, errors)) {
       isValid = true;
     }
   }
+
   return isValid;
 });
 
-keywordHandlers.set("oneOf", (oneOfNode, instanceNode) => {
+keywordHandlers.set("oneOf", (oneOfNode, instanceNode, _schemaNode, errors) => {
   assertNodeType(oneOfNode, "array");
 
   let matches = 0;
   for (const schemaNode of oneOfNode.children) {
-    if (validateSchema(schemaNode, instanceNode)) {
+    if (validateSchema(schemaNode, instanceNode, errors)) {
       matches++;
     }
   }
@@ -186,10 +216,10 @@ keywordHandlers.set("oneOf", (oneOfNode, instanceNode) => {
 });
 
 keywordHandlers.set("not", (notNode, instanceNode) => {
-  return !validateSchema(notNode, instanceNode);
+  return !validateSchema(notNode, instanceNode, []);
 });
 
-keywordHandlers.set("contains", (containsNode, instanceNode, schemaNode) => {
+keywordHandlers.set("contains", (containsNode, instanceNode, schemaNode, errors) => {
   if (instanceNode.jsonType !== "array") {
     return true;
   }
@@ -212,7 +242,7 @@ keywordHandlers.set("contains", (containsNode, instanceNode, schemaNode) => {
 
   let matches = 0;
   for (const itemNode of instanceNode.children) {
-    if (validateSchema(containsNode, itemNode)) {
+    if (validateSchema(containsNode, itemNode, errors)) {
       matches++;
     }
   }
@@ -220,7 +250,7 @@ keywordHandlers.set("contains", (containsNode, instanceNode, schemaNode) => {
   return matches >= minContains && matches <= maxContains;
 });
 
-keywordHandlers.set("dependentSchemas", (dependentSchemasNode, instanceNode) => {
+keywordHandlers.set("dependentSchemas", (dependentSchemasNode, instanceNode, _schemaNode, errors) => {
   if (instanceNode.jsonType !== "object") {
     return true;
   }
@@ -230,7 +260,7 @@ keywordHandlers.set("dependentSchemas", (dependentSchemasNode, instanceNode) => 
   let isValid = true;
   for (const propertyNode of dependentSchemasNode.children) {
     const [keyNode, schemaNode] = propertyNode.children;
-    if (jsonObjectHas(keyNode.value, instanceNode) && !validateSchema(schemaNode, instanceNode)) {
+    if (jsonObjectHas(keyNode.value, instanceNode) && !validateSchema(schemaNode, instanceNode, errors)) {
       isValid = false;
     }
   }
@@ -238,29 +268,29 @@ keywordHandlers.set("dependentSchemas", (dependentSchemasNode, instanceNode) => 
   return isValid;
 });
 
-keywordHandlers.set("then", (thenNode, instanceNode, schemaNode) => {
+keywordHandlers.set("then", (thenNode, instanceNode, schemaNode, errors) => {
   if (jsonObjectHas("if", schemaNode)) {
     const ifNode = jsonPointerStep("if", schemaNode);
-    if (validateSchema(ifNode, instanceNode)) {
-      return validateSchema(thenNode, instanceNode);
+    if (validateSchema(ifNode, instanceNode, [])) {
+      return validateSchema(thenNode, instanceNode, errors);
     }
   }
 
   return true;
 });
 
-keywordHandlers.set("else", (elseNode, instanceNode, schemaNode) => {
+keywordHandlers.set("else", (elseNode, instanceNode, schemaNode, errors) => {
   if (jsonObjectHas("if", schemaNode)) {
     const ifNode = jsonPointerStep("if", schemaNode);
-    if (!validateSchema(ifNode, instanceNode)) {
-      return validateSchema(elseNode, instanceNode);
+    if (!validateSchema(ifNode, instanceNode, [])) {
+      return validateSchema(elseNode, instanceNode, errors);
     }
   }
 
   return true;
 });
 
-keywordHandlers.set("items", (itemsNode, instanceNode, schemaNode) => {
+keywordHandlers.set("items", (itemsNode, instanceNode, schemaNode, errors) => {
   if (instanceNode.jsonType !== "array") {
     return true;
   }
@@ -275,7 +305,7 @@ keywordHandlers.set("items", (itemsNode, instanceNode, schemaNode) => {
 
   let isValid = true;
   for (const itemNode of instanceNode.children.slice(numberOfPrefixItems)) {
-    if (!validateSchema(itemsNode, itemNode)) {
+    if (!validateSchema(itemsNode, itemNode, errors)) {
       isValid = false;
     }
   }
@@ -283,7 +313,7 @@ keywordHandlers.set("items", (itemsNode, instanceNode, schemaNode) => {
   return isValid;
 });
 
-keywordHandlers.set("patternProperties", (patternPropertiesNode, instanceNode) => {
+keywordHandlers.set("patternProperties", (patternPropertiesNode, instanceNode, _schemaNode, errors) => {
   if (instanceNode.jsonType !== "object") {
     return true;
   }
@@ -297,7 +327,7 @@ keywordHandlers.set("patternProperties", (patternPropertiesNode, instanceNode) =
     for (const propertyNode of instanceNode.children) {
       const [propertyNameNode, propertyValueNode] = propertyNode.children;
       const propertyName = propertyNameNode.value;
-      if (pattern.test(propertyName) && !validateSchema(patternSchemaNode, propertyValueNode)) {
+      if (pattern.test(propertyName) && !validateSchema(patternSchemaNode, propertyValueNode, errors)) {
         isValid = false;
       }
     }
@@ -306,7 +336,7 @@ keywordHandlers.set("patternProperties", (patternPropertiesNode, instanceNode) =
   return isValid;
 });
 
-keywordHandlers.set("prefixItems", (prefixItemsNode, instanceNode) => {
+keywordHandlers.set("prefixItems", (prefixItemsNode, instanceNode, _schemaNode, errors) => {
   if (instanceNode.jsonType !== "array") {
     return true;
   }
@@ -315,7 +345,7 @@ keywordHandlers.set("prefixItems", (prefixItemsNode, instanceNode) => {
 
   let isValid = true;
   for (let index = 0; index < instanceNode.children.length; index++) {
-    if (prefixItemsNode.children[index] && !validateSchema(prefixItemsNode.children[index], instanceNode.children[index])) {
+    if (prefixItemsNode.children[index] && !validateSchema(prefixItemsNode.children[index], instanceNode.children[index], errors)) {
       isValid = false;
     }
   }
@@ -323,7 +353,7 @@ keywordHandlers.set("prefixItems", (prefixItemsNode, instanceNode) => {
   return isValid;
 });
 
-keywordHandlers.set("properties", (propertiesNode, instanceNode) => {
+keywordHandlers.set("properties", (propertiesNode, instanceNode, _schemaNode, errors) => {
   if (instanceNode.jsonType !== "object") {
     return true;
   }
@@ -335,7 +365,7 @@ keywordHandlers.set("properties", (propertiesNode, instanceNode) => {
     const [propertyNameNode, instancePropertyNode] = jsonPropertyNode.children;
     if (jsonObjectHas(propertyNameNode.value, propertiesNode)) {
       const schemaPropertyNode = jsonPointerStep(propertyNameNode.value, propertiesNode);
-      if (!validateSchema(schemaPropertyNode, instancePropertyNode)) {
+      if (!validateSchema(schemaPropertyNode, instancePropertyNode, errors)) {
         isValid = false;
       }
     }
@@ -344,7 +374,7 @@ keywordHandlers.set("properties", (propertiesNode, instanceNode) => {
   return isValid;
 });
 
-keywordHandlers.set("propertyNames", (propertyNamesNode, instanceNode) => {
+keywordHandlers.set("propertyNames", (propertyNamesNode, instanceNode, _schemaNode, errors) => {
   if (instanceNode.jsonType !== "object") {
     return true;
   }
@@ -358,7 +388,7 @@ keywordHandlers.set("propertyNames", (propertyNamesNode, instanceNode) => {
       value: propertyNode.children[0].value,
       location: JsonPointer.append(propertyNode.children[0].value, instanceNode.location)
     };
-    if (!validateSchema(propertyNamesNode, keyNode)) {
+    if (!validateSchema(propertyNamesNode, keyNode, errors)) {
       isValid = false;
     }
   }
