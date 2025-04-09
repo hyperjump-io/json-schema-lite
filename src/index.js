@@ -12,12 +12,7 @@ import {
 } from "./jsonast-util.js";
 
 /**
- * @import {
- *   Json,
- *   JsonNode,
- *   JsonObjectNode,
- *   JsonStringNode
- * } from "./jsonast.d.ts"
+ * @import { Json, JsonNode, JsonObjectNode, JsonStringNode } from "./jsonast.d.ts"
  */
 
 
@@ -139,10 +134,8 @@ keywordHandlers.set("additionalProperties", (additionalPropertiesNode, instanceN
   let isValid = true;
   for (const propertyNode of instanceNode.children) {
     const [propertyNameNode, instancePropertyNode] = propertyNode.children;
-    if (!isDefinedProperty.test(propertyNameNode.value)) {
-      if (!validateSchema(additionalPropertiesNode, instancePropertyNode)) {
-        isValid = false;
-      }
+    if (!isDefinedProperty.test(propertyNameNode.value) && !validateSchema(additionalPropertiesNode, instancePropertyNode)) {
+      isValid = false;
     }
   }
 
@@ -384,35 +377,25 @@ keywordHandlers.set("dependentRequired", (dependentRequiredNode, instanceNode) =
 
   assertNodeType(dependentRequiredNode, "object");
 
-  let isValid = true;
-  for (const propertyNode of dependentRequiredNode.children) {
+  return dependentRequiredNode.children.every((propertyNode) => {
     const [keyNode, requiredPropertiesNode] = propertyNode.children;
-    if (jsonObjectHas(keyNode.value, instanceNode)) {
-      assertNodeType(requiredPropertiesNode, "array");
-      const isConditionValid = requiredPropertiesNode.children.every((requiredPropertyNode) => {
-        assertNodeType(requiredPropertyNode, "string");
-        return jsonObjectHas(requiredPropertyNode.value, instanceNode);
-      });
-
-      if (!isConditionValid) {
-        isValid = false;
-      }
+    if (!jsonObjectHas(keyNode.value, instanceNode)) {
+      return true;
     }
-  }
 
-  return isValid;
+    assertNodeType(requiredPropertiesNode, "array");
+    return requiredPropertiesNode.children.every((requiredPropertyNode) => {
+      assertNodeType(requiredPropertyNode, "string");
+      return jsonObjectHas(requiredPropertyNode.value, instanceNode);
+    });
+  });
 });
 
 keywordHandlers.set("enum", (enumNode, instanceNode) => {
   assertNodeType(enumNode, "array");
 
   const instanceValue = jsonStringify(jsonValue(instanceNode));
-  for (const enumItemNode of enumNode.children) {
-    if (jsonStringify(jsonValue(enumItemNode)) === instanceValue) {
-      return true;
-    }
-  }
-  return false;
+  return enumNode.children.some((enumItemNode) => jsonStringify(jsonValue(enumItemNode)) === instanceValue);
 });
 
 keywordHandlers.set("exclusiveMaximum", (exclusiveMaximumNode, instanceNode) => {
@@ -422,8 +405,7 @@ keywordHandlers.set("exclusiveMaximum", (exclusiveMaximumNode, instanceNode) => 
 
   assertNodeType(exclusiveMaximumNode, "number");
 
-  const isValid = instanceNode.value < exclusiveMaximumNode.value;
-  return isValid;
+  return instanceNode.value < exclusiveMaximumNode.value;
 });
 
 keywordHandlers.set("exclusiveMinimum", (exclusiveMinimumNode, instanceNode) => {
@@ -443,8 +425,7 @@ keywordHandlers.set("maxItems", (maxItemsNode, instanceNode) => {
 
   assertNodeType(maxItemsNode, "number");
 
-  const isValid = instanceNode.children.length <= maxItemsNode.value;
-  return isValid;
+  return instanceNode.children.length <= maxItemsNode.value;
 });
 
 keywordHandlers.set("minItems", (minItemsNode, instanceNode) => {
@@ -484,8 +465,7 @@ keywordHandlers.set("maxProperties", (maxPropertiesNode, instanceNode) => {
 
   assertNodeType(maxPropertiesNode, "number");
 
-  const isValid = instanceNode.children.length <= maxPropertiesNode.value;
-  return isValid;
+  return instanceNode.children.length <= maxPropertiesNode.value;
 });
 
 keywordHandlers.set("minProperties", (minPropertiesNode, instanceNode) => {
@@ -495,8 +475,7 @@ keywordHandlers.set("minProperties", (minPropertiesNode, instanceNode) => {
 
   assertNodeType(minPropertiesNode, "number");
 
-  const isValid = instanceNode.children.length >= minPropertiesNode.value;
-  return isValid;
+  return instanceNode.children.length >= minPropertiesNode.value;
 });
 
 keywordHandlers.set("maximum", (maximumNode, instanceNode) => {
@@ -506,8 +485,7 @@ keywordHandlers.set("maximum", (maximumNode, instanceNode) => {
 
   assertNodeType(maximumNode, "number");
 
-  const isValid = instanceNode.value <= maximumNode.value;
-  return isValid;
+  return instanceNode.value <= maximumNode.value;
 });
 
 keywordHandlers.set("minimum", (minimumNode, instanceNode) => {
@@ -550,6 +528,7 @@ keywordHandlers.set("required", (requiredNode, instanceNode) => {
   }
 
   assertNodeType(requiredNode, "array");
+
   for (const requiredPropertyNode of requiredNode.children) {
     assertNodeType(requiredPropertyNode, "string");
     if (!jsonObjectHas(requiredPropertyNode.value, instanceNode)) {
@@ -560,27 +539,19 @@ keywordHandlers.set("required", (requiredNode, instanceNode) => {
 });
 
 keywordHandlers.set("type", (typeNode, instanceNode) => {
-  if (typeNode.type === "json") {
-    if (typeNode.jsonType === "string") {
+  switch (typeNode.jsonType) {
+    case "string":
       return isTypeOf(instanceNode, typeNode.value);
-    }
 
-    if (typeNode.jsonType === "array") {
-      for (const itemNode of typeNode.children) {
-        if (itemNode.type !== "json" || itemNode.jsonType != "string") {
-          throw Error("Invalid Schema");
-        }
+    case "array":
+      return typeNode.children.some((itemNode) => {
+        assertNodeType(itemNode, "string");
+        return isTypeOf(instanceNode, itemNode.value);
+      });
 
-        if (isTypeOf(instanceNode, itemNode.value)) {
-          return true;
-        }
-      }
-
-      return false;
-    }
+    default:
+      throw Error("Invalid Schema");
   }
-
-  throw Error("Invalid Schema");
 });
 
 /** @type (instanceNode: JsonNode, type: string) => boolean */
@@ -603,7 +574,7 @@ keywordHandlers.set("uniqueItems", (uniqueItemsNode, instanceNode) => {
   return new Set(normalizedItems).size === normalizedItems.length;
 });
 
-keywordHandlers.set("$id", (idNode, instanceNode, schemaNode) => {
+keywordHandlers.set("$id", (idNode, _instanceNode, schemaNode) => {
   if (!idNode.location.endsWith("#/$id")) {
     throw Error(`Embedded schemas are not supported. Found at ${schemaNode.location}`);
   }
